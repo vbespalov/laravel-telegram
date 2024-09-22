@@ -4,7 +4,6 @@ namespace Vbespalov\LaravelTelegram;
 
 use Vbespalov\LaravelTelegram\Exceptions\TelegramDataException;
 use Vbespalov\LaravelTelegram\Exceptions\TelegramException;
-use Vbespalov\LaravelTelegram\Facades\Telegram as TelegramFacade;
 use Vbespalov\LaravelTelegram\DTO\Message;
 use Vbespalov\LaravelTelegram\DTO\Update;
 use Vbespalov\LaravelTelegram\DTO\User;
@@ -13,7 +12,6 @@ use Illuminate\Contracts\Support\Arrayable;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 
 class TelegramApiClient
 {
@@ -22,27 +20,39 @@ class TelegramApiClient
     private array $botConfigs;
     private array|null $defaultBotConfig = null;
     private array|null $currentBotConfig = null;
+    private string $currentBotConfigName;
 
     const ALLOWED_API_METHODS = ['get','post'];
     public function __construct()
     {
         $this->apiUrl = config('telegram.api_url','https://api.telegram.org');
         $this->botConfigs = config('telegram.bot_configs');
-        $this->defaultBotConfigName = config('telegram.default_bot_config');
+        $this->defaultBotConfigName = config('telegram.default_bot_config','default');
+        $this->currentBotConfigName = $this->defaultBotConfigName;
         if (!empty($this->botConfigs[$this->defaultBotConfigName]))
             $this->defaultBotConfig = $this->botConfigs[$this->defaultBotConfigName];
     }
 
     /**
      * Use custom bot config
-     * @param string $botConfig
+     * @param string $botConfigName
      * @return $this
+     * @throws TelegramException
      */
-    public function bot(string $botConfig): self
+    public function bot(string $botConfigName): self
     {
-        if (!empty($this->botConfigs[$botConfig]))
-            $this->currentBotConfig = $this->botConfigs[$botConfig];
+        if (!isset($this->botConfigs[$botConfigName]))
+            throw new TelegramException("The telegram bot config [$botConfigName] does not exist.");
+        $this->checkConfig($botConfigName, $this->botConfigs[$botConfigName]);
+        $this->currentBotConfig = $this->botConfigs[$botConfigName];
+        $this->currentBotConfigName = $botConfigName;
         return $this;
+    }
+
+    private function checkConfig(string $botConfigName, mixed $config)
+    {
+        if (!is_array($config) || empty($config['bot_token']))
+            throw new TelegramException("The telegram bot config [$botConfigName] does not contain key 'bot_token'.");
     }
 
     /**
@@ -73,11 +83,12 @@ class TelegramApiClient
         $method = strtolower($method);
         if (!in_array($method, self::ALLOWED_API_METHODS)) {
             $errorMsg = "Unsupported Telegram API method '{$method}'";
-            Log::channel('telegram')->error($errorMsg);
             throw new TelegramException($errorMsg);
         }
 
         $endpoint = '/' . ltrim($endpoint,"\n\r\t\v\0\x20/");
+        if (empty($this->getBotConfig('bot_token')))
+            throw new TelegramException("Bot config key 'bot_token' for configuration [{$this->currentBotConfigName}] is required");
         $url = $this->apiUrl . '/bot' . $this->getBotConfig('bot_token') . $endpoint;
 
         $params = (is_a($params, Arrayable::class) ? $params->toArray() : $params) ?? [];
@@ -87,25 +98,11 @@ class TelegramApiClient
         $this->currentBotConfig = null;
         if ($response->successful()) {
             $responseData = $response->json();
-            Log::channel('telegram')->debug("Request to '{$url}' with method '{$method}'. Response status is {$response->status()}",[
-                'request_url' => $url,
-                'request_method' => $method,
-                'request_params' => $params,
-                'response_status' => $response->status(),
-                'response_body' => $response->body(),
-            ]);
             return (array) $responseData;
         } else {
             $errorMsg = "Unable to make telegram API request. Status: {$response->status()}. Reason: {$response->reason()}";
             if ($response->json('description'))
                 $errorMsg .= '. '.$response->json('description');
-            Log::channel('telegram')->error($errorMsg, [
-                'request_url' => $url,
-                'request_method' => $method,
-                'request_params' => $params,
-                'response_status' => $response->status(),
-                'response_body' => $response->body()
-            ]);
             throw new TelegramException($errorMsg);
         }
     }
@@ -178,7 +175,8 @@ class TelegramApiClient
         if (!is_null($secret_token))
             $params['secret_token'] = $secret_token;
 
-        $response = TelegramFacade::sendRequest('setWebhook','post',$params);
+
+        $response = $this->sendRequest('setWebhook','post',$params);
 
         try {
             if (!empty($response['ok']))
