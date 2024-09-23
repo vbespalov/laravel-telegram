@@ -2,16 +2,19 @@
 
 namespace Vbespalov\LaravelTelegram;
 
-use Vbespalov\LaravelTelegram\Exceptions\TelegramDataException;
-use Vbespalov\LaravelTelegram\Exceptions\TelegramException;
-use Vbespalov\LaravelTelegram\DTO\Message;
-use Vbespalov\LaravelTelegram\DTO\Update;
-use Vbespalov\LaravelTelegram\DTO\User;
-use Vbespalov\LaravelTelegram\DTO\WebhookInfo;
 use Illuminate\Contracts\Support\Arrayable;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
+use Vbespalov\LaravelTelegram\DTO\BotCommand;
+use Vbespalov\LaravelTelegram\DTO\BotCommandScope;
+use Vbespalov\LaravelTelegram\DTO\MenuButton;
+use Vbespalov\LaravelTelegram\DTO\Message;
+use Vbespalov\LaravelTelegram\DTO\Update;
+use Vbespalov\LaravelTelegram\DTO\User;
+use Vbespalov\LaravelTelegram\DTO\WebhookInfo;
+use Vbespalov\LaravelTelegram\Exceptions\TelegramDataException;
+use Vbespalov\LaravelTelegram\Exceptions\TelegramException;
 
 class TelegramApiClient
 {
@@ -35,12 +38,14 @@ class TelegramApiClient
 
     /**
      * Use custom bot config
-     * @param string $botConfigName
+     * @param string|null $botConfigName
      * @return $this
      * @throws TelegramException
      */
-    public function bot(string $botConfigName): self
+    public function bot(string|null $botConfigName = null): self
     {
+        if (is_null($botConfigName))
+            $botConfigName = $this->defaultBotConfigName;
         if (!isset($this->botConfigs[$botConfigName]))
             throw new TelegramException("The telegram bot config [$botConfigName] does not exist.");
         $this->checkConfig($botConfigName, $this->botConfigs[$botConfigName]);
@@ -258,7 +263,7 @@ class TelegramApiClient
         array      $messageIds,
         int|null   $messageThreadId = null,
         bool       $disableNotification = false,
-        bool       $protectContent = false
+        bool       $protectContent = false,
     ): array|null
     {
         sort($messageIds);
@@ -282,7 +287,7 @@ class TelegramApiClient
         int|null $offset = null,
         int $limit = 100,
         int $timeout = 0,
-        array|null $allowedUpdates = null
+        array|null $allowedUpdates = null,
     )
     {
         $request = [
@@ -298,6 +303,133 @@ class TelegramApiClient
         $result = $this->sendRequest('getUpdates','post',$request);
 
         return Update::collect($result['result'], Collection::class);
+    }
+
+    /**
+     * @param BotCommand[]|Collection<BotCommand> $commands
+     * @param BotCommandScope|null $scope
+     * @param string|null $languageCode
+     * @return bool
+     * @throws TelegramDataException
+     * @throws TelegramException
+     */
+    public function setMyCommands(array|Collection $commands, BotCommandScope|null $scope = null, string|null $languageCode = null): bool
+    {
+        $commands = is_array($commands) ? collect($commands) : $commands;
+        $params = [
+            'commands' => $commands->toArray(),
+        ];
+        if (!is_null($scope))
+            $params['scope'] = $scope;
+        if (!empty($languageCode))
+            $params['language_code'] = $languageCode;
+        $response = $this->sendRequest('setMyCommands','post',$params);
+
+        try {
+            if (!empty($response['ok']))
+                return (bool)$response['result'];
+        } catch (\Throwable $e) {
+            throw new TelegramDataException("Not expected response from telegram API. Error: ".$e->getMessage());
+        }
+        throw new TelegramDataException("Not expected response from telegram API.");
+    }
+
+    /**
+     * Use this method to delete the list of the bot's commands for the given scope and user language. After deletion, higher level commands will be shown to affected users. Returns True on success.
+     *
+     * @param BotCommandScope|null $scope A JSON-serialized object, describing scope of users for which the commands are relevant. Defaults to BotCommandScopeDefault.
+     * @param string|null $languageCode A two-letter ISO 639-1 language code. If empty, commands will be applied to all users from the given scope, for whose language there are no dedicated commands
+     * @return bool
+     * @throws TelegramDataException
+     * @throws TelegramException
+     */
+    public function deleteMyCommands(BotCommandScope|null $scope = null, string|null $languageCode = null)
+    {
+        $params = [];
+        if (!is_null($scope))
+            $params['scope'] = $scope;
+        if (!empty($languageCode))
+            $params['language_code'] = $languageCode;
+        $response = $this->sendRequest('deleteMyCommands','post',$params);
+
+        try {
+            if (!empty($response['ok']))
+                return (bool)$response['result'];
+        } catch (\Throwable $e) {
+            throw new TelegramDataException("Not expected response from telegram API. Error: ".$e->getMessage());
+        }
+        throw new TelegramDataException("Not expected response from telegram API.");
+    }
+
+    /**
+     * Use this method to get the current list of the bot's commands for the given scope and user language. Returns an Array of BotCommand objects. If commands aren't set, an empty list is returned.
+     * @link https://core.telegram.org/bots/api#getmycommands
+     *
+     * @param BotCommandScope|null $scope A JSON-serialized object, describing scope of users. Defaults to BotCommandScope with type Default
+     * @param string|null $languageCode A two-letter ISO 639-1 language code or an empty string
+     * @return Collection<BotCommand>
+     * @throws TelegramException|TelegramDataException
+     */
+    public function getMyCommands(BotCommandScope|null $scope = null, string|null $languageCode = null): Collection
+    {
+        $params = [];
+        if (!is_null($scope))
+            $params['scope'] = $scope->toJson();
+        if (!is_null($languageCode))
+            $params['language_code'] = $languageCode;
+        $response = $this->sendRequest('getMyCommands','post',$params);
+
+        try {
+            if (!empty($response['ok']))
+                return BotCommand::collect($response['result'], Collection::class);
+        } catch (\Throwable $e) {
+            throw new TelegramDataException("Not expected response from telegram API. Error: ".$e->getMessage());
+        }
+        throw new TelegramDataException("Not expected response from telegram API.");
+    }
+
+    /**
+     * Use this method to change the bot's menu button in a private chat, or the default menu button. Returns True on success.
+     * @link https://core.telegram.org/bots/api#setchatmenubutton
+     *
+     * @param int|null $chatId Unique identifier for the target private chat. If not specified, default bot's menu button will be changed
+     * @param MenuButton|null $menuButton A JSON-serialized object for the bot's new menu button. Defaults to MenuButtonDefault
+     * @return bool
+     * @throws TelegramException|TelegramDataException
+     */
+    public function setChatMenuButton(int|null $chatId = null, MenuButton|null $menuButton = null): bool
+    {
+        $params = [];
+        if (!is_null($chatId))
+            $params['chat_id'] = $chatId;
+        if (!is_null($menuButton))
+            $params['menu_button'] = $menuButton->toArray();
+        $response = $this->sendRequest('setChatMenuButton','post',$params);
+
+        try {
+            if (!empty($response['ok']))
+                return (bool)$response['result'];
+        } catch (\Throwable $e) {
+            throw new TelegramDataException("Not expected response from telegram API. Error: ".$e->getMessage());
+        }
+        throw new TelegramDataException("Not expected response from telegram API.");
+    }
+
+    public function getChatMenuButton(int|null $chatId = null): MenuButton
+    {
+        $params = [];
+        if (!is_null($chatId))
+            $params['chat_id'] = $chatId;
+
+        $response = $this->sendRequest('getChatMenuButton','post',$params);
+
+        try {
+            if (!empty($response['ok']))
+                return MenuButton::from($response['result']);
+        } catch (\Throwable $e) {
+            throw new TelegramDataException("Not expected response from telegram API. Error: ".$e->getMessage());
+        }
+        throw new TelegramDataException("Not expected response from telegram API.");
     }
 
 }
